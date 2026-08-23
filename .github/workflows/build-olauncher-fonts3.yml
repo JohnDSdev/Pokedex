@@ -1,8 +1,8 @@
-name: Build Olauncher Fonts3
+name: Build Olauncher Fonts4
 
 on:
   push:
-    branches: [tmp-olauncher-fonts3-20260823]
+    branches: [tmp-olauncher-fonts4-20260823]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -23,7 +23,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Reconstruct modified Olauncher source
+      - name: Reconstruct previous modified Olauncher source
         run: |
           set -euxo pipefail
           mkdir -p work
@@ -33,6 +33,48 @@ jobs:
           cd ../..
           cat olauncher-builder/payload/part* | base64 -d > overlay-text.tar.gz
           tar -xzf overlay-text.tar.gz -C work/olauncher
+
+      - name: Fix external font picker return and auto-apply imported font
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('work/olauncher')
+
+          main = root / 'app/src/main/java/app/olauncher/MainActivity.kt'
+          s = main.read_text()
+          s = s.replace(
+              '    private var profileReceiver: BroadcastReceiver? = null\n',
+              '    private var profileReceiver: BroadcastReceiver? = null\n    private var preserveNavigationForExternalActivity = false\n',
+              1,
+          )
+          old = '''    override fun onStop() {\n        isResumed = false\n        backToHomeScreen()\n        super.onStop()\n    }\n\n    override fun onUserLeaveHint() {\n        backToHomeScreen()\n        super.onUserLeaveHint()\n    }\n'''
+          new = '''    override fun onStop() {\n        isResumed = false\n        if (!preserveNavigationForExternalActivity) backToHomeScreen()\n        super.onStop()\n    }\n\n    override fun onUserLeaveHint() {\n        if (!preserveNavigationForExternalActivity) backToHomeScreen()\n        super.onUserLeaveHint()\n    }\n\n    fun preserveNavigationForExternalActivity(preserve: Boolean) {\n        preserveNavigationForExternalActivity = preserve\n    }\n'''
+          if old not in s:
+              raise SystemExit('MainActivity stop/home code not found')
+          main.write_text(s.replace(old, new, 1))
+
+          settings = root / 'app/src/main/java/app/olauncher/ui/SettingsFragment.kt'
+          s = settings.read_text()
+          if 'import app.olauncher.MainActivity\n' not in s:
+              s = s.replace('import app.olauncher.MainViewModel\n', 'import app.olauncher.MainActivity\nimport app.olauncher.MainViewModel\n', 1)
+
+          old = '''    private val fontFilePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->\n        if (uri == null) return@registerForActivityResult\n        FontManager.importFont(requireContext(), uri)\n            .onSuccess { option ->\n                requireContext().showToast(getString(R.string.font_added, option.name))\n                binding.root.post {\n                    populateFontText()\n                    showFontPicker()\n                }\n            }\n            .onFailure { error ->\n                requireContext().showToast(\n                    getString(R.string.font_import_failed, error.message ?: "Unknown error")\n                )\n            }\n    }\n'''
+          new = '''    private val fontFilePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->\n        (activity as? MainActivity)?.preserveNavigationForExternalActivity(false)\n        if (uri == null) return@registerForActivityResult\n        FontManager.importFont(requireContext(), uri)\n            .onSuccess { option ->\n                FontManager.setSelected(requireContext(), option.id)\n                requireContext().showToast(getString(R.string.font_added, option.name))\n                binding.root.post {\n                    populateFontText()\n                    requireActivity().window.decorView.let(FontManager::applyToTree)\n                    showFontPicker()\n                }\n            }\n            .onFailure { error ->\n                requireContext().showToast(\n                    getString(R.string.font_import_failed, error.message ?: "Unknown error")\n                )\n            }\n    }\n'''
+          if old not in s:
+              raise SystemExit('font result callback not found')
+          s = s.replace(old, new, 1)
+          old = '                    which == options.size -> fontFilePicker.launch(arrayOf("*/*"))\n'
+          new = '''                    which == options.size -> {\n                        (activity as? MainActivity)?.preserveNavigationForExternalActivity(true)\n                        fontFilePicker.launch(arrayOf("font/ttf", "font/otf", "application/x-font-ttf", "application/x-font-opentype", "*/*"))\n                    }\n'''
+          if old not in s:
+              raise SystemExit('font picker launch code not found')
+          settings.write_text(s.replace(old, new, 1))
+
+          gradle = root / 'app/build.gradle'
+          s = gradle.read_text()
+          s = s.replace('versionCode 110', 'versionCode 111', 1)
+          s = s.replace('versionName "v6.7.1-fonts3"', 'versionName "v6.7.1-fonts4"', 1)
+          gradle.write_text(s)
+          PY
 
       - name: Build Matrix Sans 1.722 fonts
         run: |
@@ -66,15 +108,15 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p deliverables source-stage
-          cp work/olauncher/app/build/outputs/apk/debug/app-debug.apk deliverables/Olauncher-Font-Picker-v6.7.1-fonts3.apk
+          cp work/olauncher/app/build/outputs/apk/debug/app-debug.apk deliverables/Olauncher-Font-Picker-v6.7.1-fonts4.apk
           rm -rf work/olauncher/.git work/olauncher/.gradle work/olauncher/.kotlin work/olauncher/app/build
           cp -a work/olauncher source-stage/olauncher
-          (cd source-stage && zip -qr ../deliverables/Olauncher-Font-Picker-v6.7.1-fonts3-source.zip olauncher)
-          (cd deliverables && sha256sum *.apk *.zip > Olauncher-Font-Picker-v6.7.1-fonts3-SHA256SUMS.txt)
+          (cd source-stage && zip -qr ../deliverables/Olauncher-Font-Picker-v6.7.1-fonts4-source.zip olauncher)
+          (cd deliverables && sha256sum *.apk *.zip > Olauncher-Font-Picker-v6.7.1-fonts4-SHA256SUMS.txt)
 
       - uses: actions/upload-artifact@v4
         with:
-          name: olauncher-fonts3
+          name: olauncher-fonts4
           path: deliverables/
           if-no-files-found: error
           retention-days: 7
